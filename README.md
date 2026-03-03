@@ -2,7 +2,7 @@
 
 > Enterprise-grade AI support agent built with **GitHub Copilot SDK**, **Azure AI Foundry**, **Work IQ MCP**, and a **Next.js Chat UI**.
 
-[![Architecture](docs/architecture-diagram.png)](docs/architecture.md)
+[📐 Architecture Details](docs/architecture.md)
 
 ---
 
@@ -12,7 +12,7 @@ This project demonstrates a complete "Microsoft Support Agent" that:
 
 1. Accepts technical questions via a streaming Chat UI
 2. Searches **Microsoft Docs** (official documentation) for answers
-3. Performs deep research via **Azure AI Foundry** (Bing-grounded multi-step research)
+3. Performs deep research via **Azure AI Foundry** (web search-grounded multi-step research)
 4. Accesses **M365 data** (Teams, email, calendar) via **Work IQ MCP** when relevant
 5. Generates **PowerPoint reports** summarizing findings
 6. Uses **GitHub Copilot SDK** as the primary agent orchestrator
@@ -29,10 +29,10 @@ Next.js Chat UI (port 3000)
 FastAPI Backend (port 8000)
  ↓
 GitHub Copilot SDK Agent (Main Orchestrator)
- ├─ Tool: query_ms_docs_tool      → MS Docs MCP Server (npx @microsoft/learn-docs-mcp)
- ├─ Tool: foundry_deep_research_tool → Azure AI Foundry Agent (DeepResearchTool + Bing)
- ├─ MCP Server: workiq (session-level) → Work IQ MCP Server (npx @microsoft/workiq mcp)
- └─ Tool: generate_powerpoint_tool → python-pptx (local .pptx generation)
+ ├─ Tool: query_ms_docs_tool         → MS Docs MCP Server (npx @microsoft/learn-docs-mcp)
+ ├─ Tool: foundry_deep_research_tool → Azure AI Foundry Agent (WebSearchTool)
+ ├─ Tool: generate_powerpoint_tool   → python-pptx (local .pptx generation)
+ └─ MCP Server: workiq (session-level, optional) → Work IQ MCP Server (npx @microsoft/workiq mcp)
 ```
 
 ### Component Details
@@ -43,7 +43,7 @@ GitHub Copilot SDK Agent (Main Orchestrator)
 | Backend API | FastAPI + WebSocket | Bridges UI and Copilot SDK; serves report downloads |
 | Agent Runtime | GitHub Copilot SDK (Python) | Orchestrates tools, maintains conversation context |
 | MS Docs MCP | `@microsoft/learn-docs-mcp` | Queries official Microsoft documentation |
-| Deep Research | Azure AI Foundry (`azure-ai-projects`) | Multi-step web research with Bing grounding |
+| Deep Research | Azure AI Foundry (`azure-ai-projects`) | Multi-step web research with WebSearch grounding |
 | M365 Access | Work IQ MCP (`@microsoft/workiq`) | Session-level MCP integration for emails, meetings, Teams, documents |
 | PowerPoint | `python-pptx` | Generates structured .pptx reports |
 
@@ -148,14 +148,12 @@ BYOK_AZURE_API_VERSION=2024-10-21
 
 ```env
 AZURE_FOUNDRY_PROJECT_ENDPOINT=https://your-project.api.azureml.ms
-AZURE_FOUNDRY_DEEP_RESEARCH_MODEL=your-deployment-name
-AZURE_FOUNDRY_BING_RESOURCE=your-bing-connection-name
+FOUNDRY_MODEL_DEPLOYMENT_NAME=your-deployment-name
 ```
 
 Set up in [Azure AI Foundry](https://ai.azure.com):
 1. Create an Azure AI Foundry project
-2. Deploy a model with **Deep Research** enabled
-3. Connect a Bing Search resource for grounding
+2. Deploy a model with **Web Search** enabled
 
 ### Optional: Work IQ (M365 Access)
 
@@ -219,7 +217,7 @@ If not installed, the agent falls back to providing a direct search URL.
 │   ├── agent.py                    # Copilot SDK agent orchestrator
 │   ├── requirements.txt
 │   ├── tools/
-│   │   ├── foundry_tool.py         # Azure AI Foundry deep research
+│   │   ├── foundry_tool.py         # Azure AI Foundry deep research (WebSearch)
 │   │   ├── pptx_tool.py            # PowerPoint generator (python-pptx)
 │   │   ├── msdocs_tool.py          # MS Docs MCP wrapper
 │   │   └── __init__.py
@@ -234,6 +232,7 @@ If not installed, the agent falls back to providing a direct search URL.
 │   │   │   ├── ChatInterface.tsx   # Main chat component (WebSocket, state)
 │   │   │   ├── MessageList.tsx     # Message list + typing indicator
 │   │   │   ├── ToolExecutionCard.tsx # Collapsible tool execution display
+│   │   │   ├── AgentEventCard.tsx  # Collapsible agent event display
 │   │   │   └── ModelSelector.tsx   # Model dropdown
 │   │   └── lib/
 │   │       ├── api.ts              # API/WebSocket client

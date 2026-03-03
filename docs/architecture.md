@@ -13,7 +13,7 @@
 │  │  │ ChatInterface│  │ MessageList │  │ ModelSelector│  │ │
 │  │  │  (WebSocket) │  │  + Markdown │  │              │  │ │
 │  │  └──────┬───────┘  └─────────────┘  └──────────────┘  │ │
-│  │         │ ToolExecutionCard (expandable)                │ │
+│  │         │ ToolExecutionCard / AgentEventCard (expandable)│ │
 │  └─────────┼───────────────────────────────────────────────┘ │
 └────────────┼────────────────────────────────────────────────┘
              │ WebSocket (ws://localhost:8000/ws/chat/{id})
@@ -43,21 +43,24 @@
 │  │  │(msdocs_tool)  │  │(foundry_tool)                │   │ │
 │  │  └───────┬───────┘  └──────────────┬──────────────┘   │ │
 │  │          │                          │                   │ │
-│  │  ┌───────────────┐  ┌─────────────────────────────┐   │ │
-│  │  │query_workiq   │  │generate_powerpoint           │   │ │
-│  │  │(workiq_tool)  │  │(pptx_tool)                   │   │ │
-│  │  └───────┬───────┘  └──────────────┬──────────────┘   │ │
-│  └──────────┼──────────────────────────┼───────────────────┘ │
-└─────────────┼──────────────────────────┼─────────────────────┘
+│  │  ┌───────────────────────────────────────────────┐     │ │
+│  │  │generate_powerpoint (pptx_tool)                │     │ │
+│  │  └───────────────────────────────────────────────┘     │ │
+│  │                                                         │ │
+│  │  Session-level MCP Server (optional):                   │ │
+│  │  ┌─────────────────────────────────────────────────┐   │ │
+│  │  │  workiq MCP (when WORKIQ_ENABLED=true)           │   │ │
+│  │  └─────────────────────────────────────────────────┘   │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
               │                          │
     ┌─────────▼─────────┐    ┌───────────▼──────────────┐
     │   MS Docs MCP      │    │  Azure AI Foundry         │
     │   (Node.js stdio)  │    │  Agent Service (REST)     │
     │                    │    │                           │
-    │ @microsoft/        │    │ - DeepResearchTool        │
-    │  learn-docs-mcp    │    │ - Bing Search grounding   │
-    └────────────────────┘    │ - Multi-step reasoning    │
-                              └───────────────────────────┘
+    │ @microsoft/        │    │ - WebSearchTool           │
+    │  learn-docs-mcp    │    │ - Multi-step reasoning    │
+    └────────────────────┘    └───────────────────────────┘
     ┌────────────────────┐
     │  Work IQ MCP       │
     │  (Node.js stdio)   │
@@ -117,19 +120,20 @@ FastAPI receives events via session.on(handler)
 
 ### foundry_deep_research_tool
 - Uses `azure-ai-projects` Python SDK
-- Creates a temporary agent with `DeepResearchTool` (Bing grounding)
-- Runs on a new thread, polls for completion
-- Deletes the temporary agent after use
-
-### query_workiq_tool
-- Spawns `npx -y @microsoft/workiq mcp` subprocess
-- Sends MCP JSON-RPC `tools/call` with `ask` tool
-- Only active when `WORKIQ_ENABLED=true` in environment
+- Creates or reuses a named agent with `WebSearchTool`
+- Invokes research via the OpenAI-compatible responses API
+- Reads `FOUNDRY_PROJECT_ENDPOINT` (or `AZURE_FOUNDRY_PROJECT_ENDPOINT`) and `FOUNDRY_MODEL_DEPLOYMENT_NAME` (or `AZURE_FOUNDRY_DEEP_RESEARCH_MODEL`) from environment
 
 ### generate_powerpoint_tool
 - Uses `python-pptx` to create a structured 5-slide deck
 - Saves to `backend/generated_reports/report_{uuid}.pptx`
 - Returns a download path; FastAPI `/reports/{filename}` serves the file
+
+### Work IQ MCP (session-level)
+- Configured as a session-level MCP server when `WORKIQ_ENABLED=true`
+- Spawns `npx -y @microsoft/workiq mcp` subprocess
+- Exposes M365 tools (email, calendar, Teams, OneDrive, people) directly to the Copilot SDK session
+- No custom Python wrapper needed — the Copilot SDK handles MCP communication
 
 ## Session Management
 
