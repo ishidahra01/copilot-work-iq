@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
@@ -31,10 +32,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await get_agent().start()
+        logger.info("Support agent started successfully.")
+    except Exception as exc:
+        logger.warning(
+            "Could not start Copilot SDK agent: %s. "
+            "Ensure the Copilot CLI is installed and authenticated.",
+            exc,
+        )
+    try:
+        yield
+    finally:
+        if _agent:
+            await _agent.stop()
+
+
 app = FastAPI(
     title="Microsoft Support Agent API",
     description="Backend for the Copilot SDK-powered enterprise support agent",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS — allow the Next.js dev server and configured origins
@@ -65,29 +85,6 @@ def get_agent():
 
 REPORTS_DIR = Path(__file__).parent / "generated_reports"
 REPORTS_DIR.mkdir(exist_ok=True)
-
-
-# ---------------------------------------------------------------------------
-# Startup / shutdown
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    try:
-        await get_agent().start()
-        logger.info("Support agent started successfully.")
-    except Exception as exc:
-        logger.warning(
-            "Could not start Copilot SDK agent: %s. "
-            "Ensure the Copilot CLI is installed and authenticated.",
-            exc,
-        )
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    if _agent:
-        await _agent.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +154,7 @@ async def chat_websocket(websocket: WebSocket, session_id: str) -> None:
       {"prompt": "...", "model": "gpt-4o"}
 
     Server streams event objects:
+            {"type": "agent.event", "event_name": "...", "data": {...}}
       {"type": "assistant.message_delta", "content": "..."}
       {"type": "tool.execution_start", "tool_name": "...", "args": {...}}
       {"type": "tool.execution_complete", "tool_name": "...", "result": "..."}

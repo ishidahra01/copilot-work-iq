@@ -31,7 +31,7 @@ FastAPI Backend (port 8000)
 GitHub Copilot SDK Agent (Main Orchestrator)
  ├─ Tool: query_ms_docs_tool      → MS Docs MCP Server (npx @microsoft/learn-docs-mcp)
  ├─ Tool: foundry_deep_research_tool → Azure AI Foundry Agent (DeepResearchTool + Bing)
- ├─ Tool: query_workiq_tool       → Work IQ MCP Server (npx @microsoft/workiq mcp)
+ ├─ MCP Server: workiq (session-level) → Work IQ MCP Server (npx @microsoft/workiq mcp)
  └─ Tool: generate_powerpoint_tool → python-pptx (local .pptx generation)
 ```
 
@@ -44,7 +44,7 @@ GitHub Copilot SDK Agent (Main Orchestrator)
 | Agent Runtime | GitHub Copilot SDK (Python) | Orchestrates tools, maintains conversation context |
 | MS Docs MCP | `@microsoft/learn-docs-mcp` | Queries official Microsoft documentation |
 | Deep Research | Azure AI Foundry (`azure-ai-projects`) | Multi-step web research with Bing grounding |
-| M365 Access | Work IQ MCP (`@microsoft/workiq`) | Reads emails, meetings, Teams, documents |
+| M365 Access | Work IQ MCP (`@microsoft/workiq`) | Session-level MCP integration for emails, meetings, Teams, documents |
 | PowerPoint | `python-pptx` | Generates structured .pptx reports |
 
 ---
@@ -222,7 +222,7 @@ If not installed, the agent falls back to providing a direct search URL.
 │   │   ├── foundry_tool.py         # Azure AI Foundry deep research
 │   │   ├── pptx_tool.py            # PowerPoint generator (python-pptx)
 │   │   ├── msdocs_tool.py          # MS Docs MCP wrapper
-│   │   └── workiq_tool.py          # Work IQ MCP wrapper
+│   │   └── __init__.py
 │   ├── skills/
 │   │   └── support_investigation.py # Agent system prompt / skill definition
 │   └── generated_reports/          # Generated .pptx files (git-ignored)

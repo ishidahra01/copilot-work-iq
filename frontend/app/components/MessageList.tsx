@@ -4,6 +4,7 @@ import { useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatMessage } from "@/app/lib/types";
+import AgentEventCard from "./AgentEventCard";
 import ToolExecutionCard from "./ToolExecutionCard";
 
 interface Props {
@@ -24,6 +25,15 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       )}
 
       <div className={`max-w-[80%] ${isUser ? "items-end" : "items-start"} flex flex-col`}>
+        {/* Agent execution logs (Copilot SDK events) */}
+        {!isUser && message.agentEvents && message.agentEvents.length > 0 && (
+          <div className="w-full mb-2">
+            {message.agentEvents.map((event) => (
+              <AgentEventCard key={event.id} event={event} />
+            ))}
+          </div>
+        )}
+
         {/* Tool executions (shown before the message for assistant) */}
         {!isUser && message.toolExecutions && message.toolExecutions.length > 0 && (
           <div className="w-full mb-2">

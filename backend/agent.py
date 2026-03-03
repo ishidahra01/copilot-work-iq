@@ -9,19 +9,109 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
+import json
 from typing import Any, AsyncIterator, Dict, Optional
 
-from copilot import CopilotClient
+from copilot import CopilotClient, PermissionHandler
 
 from tools import (
     foundry_deep_research_tool,
     generate_powerpoint_tool,
     query_ms_docs_tool,
-    query_workiq_tool,
 )
 from skills import SUPPORT_INVESTIGATION_SYSTEM_MESSAGE
 
 logger = logging.getLogger(__name__)
+
+_SUPPRESSED_AGENT_EVENTS = {
+    "assistant.message_delta",
+    "assistant.message",
+    "assistant.streaming_delta",
+    "assistant.usage",
+    "tool.execution_start",
+    "tool.execution_complete",
+    "session.idle",
+}
+
+
+def _event_data_to_dict(data: Any) -> dict[str, Any]:
+    """Best-effort conversion of Copilot SDK event payloads to dict."""
+    if data is None:
+        return {}
+    if isinstance(data, dict):
+        return data
+
+    for method_name in ("model_dump", "dict", "to_dict"):
+        method = getattr(data, method_name, None)
+        if callable(method):
+            try:
+                dumped = method()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+
+    try:
+        attrs = vars(data)
+        if isinstance(attrs, dict) and attrs:
+            return attrs
+    except Exception:
+        pass
+
+    return {"value": str(data)}
+
+
+def _format_tool_result(value: Any) -> str:
+    """Normalize tool result payloads to displayable text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if text:
+                    parts.append(str(text))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            else:
+                parts.append(str(item))
+        return "\n\n".join(p for p in parts if p)
+    if isinstance(value, dict):
+        content = value.get("content")
+        if content is not None:
+            content_text = _format_tool_result(content)
+            if content_text:
+                return content_text
+        return json.dumps(value, ensure_ascii=False, default=str, indent=2)
+    return str(value)
+
+
+def _extract_tool_result(data: Any, data_dict: dict[str, Any]) -> str:
+    """Extract tool result from multiple possible SDK payload shapes."""
+    candidates = [
+        data_dict.get("result"),
+        data_dict.get("tool_result"),
+        data_dict.get("output"),
+        data_dict.get("content"),
+        data_dict.get("message"),
+    ]
+    for candidate in candidates:
+        text = _format_tool_result(candidate)
+        if text:
+            return text
+
+    fallback_attr = getattr(data, "result", None)
+    fallback_text = _format_tool_result(fallback_attr)
+    if fallback_text:
+        return fallback_text
+
+    return ""
 
 
 def _build_byok_provider() -> Dict[str, Any]:
@@ -42,10 +132,35 @@ def _build_byok_provider() -> Dict[str, Any]:
     return config
 
 
+def _resolve_cli_path() -> str | None:
+    """Resolve Copilot CLI path only when explicitly requested."""
+    env_path = os.environ.get("COPILOT_CLI_PATH")
+    if env_path:
+        return env_path
+
+    # If not set, let the SDK decide how to locate the CLI.
+    return None
+
+
+def _build_mcp_servers() -> Dict[str, Any]:
+    """Build MCP server configuration for session-level MCP tools."""
+    if os.environ.get("WORKIQ_ENABLED", "false").lower() != "true":
+        return {}
+
+    return {
+        "workiq": {
+            "type": "local",
+            "command": "npx",
+            "args": ["-y", "@microsoft/workiq", "mcp"],
+            "tools": ["*"],
+        }
+    }
+
+
 def _build_client() -> CopilotClient:
     """Create a CopilotClient, supporting both GitHub auth and BYOK."""
     github_token = os.environ.get("COPILOT_GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    cli_path = os.environ.get("COPILOT_CLI_PATH", "copilot")
+    cli_path = _resolve_cli_path()
 
     # BYOK configuration (no GitHub subscription needed)
     byok_provider = os.environ.get("BYOK_PROVIDER")
@@ -53,10 +168,13 @@ def _build_client() -> CopilotClient:
         logger.info("Using BYOK provider: %s", byok_provider)
 
     client_opts: Dict[str, Any] = {
-        "cli_path": cli_path,
         "log_level": os.environ.get("LOG_LEVEL", "warning"),
         "auto_restart": True,
     }
+    if os.environ.get("WORKIQ_ENABLED", "false").lower() == "true":
+        client_opts["cli_args"] = ["--allow-all-tools", "--allow-all-paths"]
+    if cli_path:
+        client_opts["cli_path"] = cli_path
     if github_token:
         client_opts["github_token"] = github_token
 
@@ -122,13 +240,17 @@ class SupportAgent:
                 "model": model,
                 "streaming": True,
                 "system_message": {"content": SUPPORT_INVESTIGATION_SYSTEM_MESSAGE},
+                "on_permission_request": PermissionHandler.approve_all,
                 "tools": [
                     query_ms_docs_tool,
                     foundry_deep_research_tool,
-                    query_workiq_tool,
                     generate_powerpoint_tool,
                 ],
             }
+
+            mcp_servers = _build_mcp_servers()
+            if mcp_servers:
+                session_config["mcp_servers"] = mcp_servers
 
             if byok_provider:
                 session_config["provider"] = _build_byok_provider()
@@ -165,29 +287,38 @@ class SupportAgent:
                 def on_event(event: Any) -> None:
                     evt_type = event.type.value if hasattr(event.type, "value") else str(event.type)
                     data = event.data if hasattr(event, "data") else {}
+                    data_dict = _event_data_to_dict(data)
+
+                    if evt_type not in _SUPPRESSED_AGENT_EVENTS:
+                        queue.put_nowait({
+                            "type": "agent.event",
+                            "event_name": evt_type,
+                            "data": data_dict,
+                        })
 
                     if evt_type == "assistant.message_delta":
                         queue.put_nowait({
                             "type": "assistant.message_delta",
-                            "content": getattr(data, "delta_content", "") or "",
+                            "content": data_dict.get("delta_content") or getattr(data, "delta_content", "") or "",
                         })
                     elif evt_type == "assistant.message":
                         queue.put_nowait({
                             "type": "assistant.message",
-                            "content": getattr(data, "content", "") or "",
+                            "content": data_dict.get("content") or getattr(data, "content", "") or "",
                         })
                     elif evt_type == "tool.execution_start":
                         queue.put_nowait({
                             "type": "tool.execution_start",
-                            "tool_name": getattr(data, "tool_name", "unknown"),
-                            "args": getattr(data, "tool_args", {}),
+                            "tool_name": data_dict.get("tool_name") or data_dict.get("name") or getattr(data, "tool_name", "unknown"),
+                            "args": data_dict.get("tool_args") or data_dict.get("arguments") or getattr(data, "tool_args", {}) or {},
+                            "tool_call_id": data_dict.get("tool_call_id") or data_dict.get("call_id") or data_dict.get("id"),
                         })
                     elif evt_type == "tool.execution_complete":
-                        result = getattr(data, "result", None)
                         queue.put_nowait({
                             "type": "tool.execution_complete",
-                            "tool_name": getattr(data, "tool_name", "unknown"),
-                            "result": str(result) if result is not None else "",
+                            "tool_name": data_dict.get("tool_name") or data_dict.get("name") or getattr(data, "tool_name", "unknown"),
+                            "result": _extract_tool_result(data, data_dict),
+                            "tool_call_id": data_dict.get("tool_call_id") or data_dict.get("call_id") or data_dict.get("id"),
                         })
                     elif evt_type == "session.idle":
                         queue.put_nowait({"type": "session.idle"})

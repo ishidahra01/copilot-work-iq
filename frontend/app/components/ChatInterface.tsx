@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { v4 as uuidv4 } from "uuid";
-import { ChatMessage, Model, ServerEvent, ToolExecution } from "@/app/lib/types";
+import { AgentEvent, ChatMessage, Model, ServerEvent, ToolExecution } from "@/app/lib/types";
 import { createSession, deleteSession, fetchModels, connectWebSocket } from "@/app/lib/api";
 import MessageList from "./MessageList";
 import ModelSelector from "./ModelSelector";
@@ -87,12 +87,35 @@ export default function ChatInterface() {
       content: "",
       timestamp: Date.now(),
       toolExecutions: [],
+      agentEvents: [],
       isStreaming: true,
     };
     setMessages((prev) => [...prev, assistantMsg]);
 
     // Track tool executions in progress
-    const activeTools = new Map<string, ToolExecution>();
+    const activeToolsById = new Map<string, ToolExecution>();
+    const activeToolIdsByName = new Map<string, string[]>();
+
+    const finalizeRunningTools = (fallbackResult?: string) => {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== assistantMsgId) return m;
+          return {
+            ...m,
+            toolExecutions: (m.toolExecutions ?? []).map((tool) =>
+              tool.status === "running"
+                ? {
+                    ...tool,
+                    status: "complete",
+                    completedAt: Date.now(),
+                    result: tool.result ?? fallbackResult,
+                  }
+                : tool
+            ),
+          };
+        })
+      );
+    };
 
     wsRef.current.onmessage = (event: MessageEvent) => {
       const data: ServerEvent = JSON.parse(event.data);
@@ -118,8 +141,25 @@ export default function ChatInterface() {
           );
           break;
 
+        case "agent.event": {
+          const eventLog: AgentEvent = {
+            id: uuidv4(),
+            eventName: data.event_name,
+            data: data.data,
+            timestamp: Date.now(),
+          };
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? { ...m, agentEvents: [...(m.agentEvents ?? []), eventLog] }
+                : m
+            )
+          );
+          break;
+        }
+
         case "tool.execution_start": {
-          const toolId = uuidv4();
+          const toolId = data.tool_call_id ?? uuidv4();
           const te: ToolExecution = {
             id: toolId,
             toolName: data.tool_name,
@@ -127,7 +167,10 @@ export default function ChatInterface() {
             status: "running",
             startedAt: Date.now(),
           };
-          activeTools.set(data.tool_name, te);
+          activeToolsById.set(toolId, te);
+          const queue = activeToolIdsByName.get(data.tool_name) ?? [];
+          queue.push(toolId);
+          activeToolIdsByName.set(data.tool_name, queue);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId
@@ -139,7 +182,15 @@ export default function ChatInterface() {
         }
 
         case "tool.execution_complete": {
-          const te = activeTools.get(data.tool_name);
+          let toolId = data.tool_call_id;
+
+          if (!toolId) {
+            const queue = activeToolIdsByName.get(data.tool_name) ?? [];
+            toolId = queue.shift();
+            activeToolIdsByName.set(data.tool_name, queue);
+          }
+
+          const te = toolId ? activeToolsById.get(toolId) : undefined;
           if (te) {
             const updated: ToolExecution = {
               ...te,
@@ -147,7 +198,7 @@ export default function ChatInterface() {
               status: "complete",
               completedAt: Date.now(),
             };
-            activeTools.set(data.tool_name, updated);
+            activeToolsById.set(updated.id, updated);
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === assistantMsgId
@@ -160,11 +211,56 @@ export default function ChatInterface() {
                   : m
               )
             );
+          } else {
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantMsgId) return m;
+
+                const runningTools = (m.toolExecutions ?? []).filter(
+                  (tool) => tool.status === "running"
+                );
+                const fallbackTarget = [...runningTools]
+                  .reverse()
+                  .find((tool) => tool.toolName === data.tool_name)
+                  ?? [...runningTools].reverse()[0];
+
+                if (fallbackTarget) {
+                  return {
+                    ...m,
+                    toolExecutions: (m.toolExecutions ?? []).map((tool) =>
+                      tool.id === fallbackTarget.id
+                        ? {
+                            ...tool,
+                            status: "complete",
+                            result: data.result,
+                            completedAt: Date.now(),
+                          }
+                        : tool
+                    ),
+                  };
+                }
+
+                const orphanCompleted: ToolExecution = {
+                  id: uuidv4(),
+                  toolName: data.tool_name,
+                  status: "complete",
+                  startedAt: Date.now(),
+                  completedAt: Date.now(),
+                  result: data.result,
+                };
+
+                return {
+                  ...m,
+                  toolExecutions: [...(m.toolExecutions ?? []), orphanCompleted],
+                };
+              })
+            );
           }
           break;
         }
 
         case "session.idle":
+          finalizeRunningTools();
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId ? { ...m, isStreaming: false } : m
@@ -174,6 +270,7 @@ export default function ChatInterface() {
           break;
 
         case "error":
+          finalizeRunningTools("Tool execution interrupted");
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId
