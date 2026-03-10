@@ -20,12 +20,12 @@
              │ Streaming JSON events
              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                  FastAPI Backend (Python)                     │
+│               FastAPI Backend (Python)                        │
 │                                                              │
 │  /ws/chat/{id}  /models  /sessions  /reports/{file}          │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
-│  │              SupportAgent (agent.py)                    │ │
+│  │         Enterprise Intelligence Agent (agent.py)        │ │
 │  │                                                         │ │
 │  │  ┌─────────────────────────────────────────────────┐   │ │
 │  │  │           GitHub Copilot SDK (Python)            │   │ │
@@ -39,10 +39,13 @@
 │  │                                                         │ │
 │  │  Custom Tools:                                          │ │
 │  │  ┌───────────────┐  ┌─────────────────────────────┐   │ │
-│  │  │query_ms_docs  │  │foundry_deep_research         │   │ │
-│  │  │(msdocs_tool)  │  │(foundry_tool)                │   │ │
+│  │  │query_ms_docs  │  │foundry_knowledge             │   │ │
+│  │  │(msdocs_tool)  │  │(foundry_iq_tool)  ← NEW     │   │ │
 │  │  └───────┬───────┘  └──────────────┬──────────────┘   │ │
-│  │          │                          │                   │ │
+│  │          │                          │ Azure AI Search   │ │
+│  │  ┌───────────────────────────────────────────────┐     │ │
+│  │  │foundry_deep_research (foundry_tool)           │     │ │
+│  │  └───────────────────────────────────────────────┘     │ │
 │  │  ┌───────────────────────────────────────────────┐     │ │
 │  │  │generate_powerpoint (pptx_tool)                │     │ │
 │  │  └───────────────────────────────────────────────┘     │ │
@@ -53,23 +56,52 @@
 │  │  └─────────────────────────────────────────────────┘   │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
-              │                          │
-    ┌─────────▼─────────┐    ┌───────────▼──────────────┐
-    │   MS Docs MCP      │    │  Azure AI Foundry         │
-    │   (Node.js stdio)  │    │  Agent Service (REST)     │
-    │                    │    │                           │
-    │ @microsoft/        │    │ - WebSearchTool           │
-    │  learn-docs-mcp    │    │ - Multi-step reasoning    │
-    └────────────────────┘    └───────────────────────────┘
-    ┌────────────────────┐
-    │  Work IQ MCP       │
-    │  (Node.js stdio)   │
-    │                    │
-    │ @microsoft/workiq  │
-    │ - Email, Calendar  │
-    │ - Teams, OneDrive  │
-    │ - People / Org     │
-    └────────────────────┘
+              │                │                    │
+    ┌─────────▼──────┐  ┌──────▼───────────┐  ┌───▼──────────────────────┐
+    │  MS Docs MCP   │  │  Azure AI Search  │  │  Azure AI Foundry         │
+    │  (Node stdio)  │  │  MCP (@azure/mcp) │  │  Agent Service (REST)     │
+    │                │  │                   │  │                           │
+    │ @microsoft/    │  │ azureaisearch     │  │ - WebSearchTool           │
+    │  learn-docs-mcp│  │ namespace         │  │ - Multi-step reasoning    │
+    └────────────────┘  │ - Foundry IQ index│  └───────────────────────────┘
+                        └───────────────────┘
+    ┌────────────────┐
+    │  Work IQ MCP   │
+    │  (Node stdio)  │
+    │                │
+    │ @microsoft/    │
+    │  workiq        │
+    │ - Email        │
+    │ - Calendar     │
+    │ - Teams        │
+    └────────────────┘
+```
+
+## Knowledge Layers
+
+The Enterprise Intelligence Agent combines four knowledge layers for comprehensive investigations:
+
+| Layer               | Source                          | Tool                          | Purpose                                      |
+|---------------------|---------------------------------|-------------------------------|----------------------------------------------|
+| Official Docs       | Microsoft Learn / MS Docs MCP   | `query_ms_docs_tool`          | Official product guidance                    |
+| Enterprise Knowledge| Foundry IQ (Azure AI Search)    | `foundry_knowledge_tool`      | Internal runbooks, architecture docs, SOPs   |
+| Org Context         | Work IQ (Microsoft Graph)       | `query_workiq_tool` (via MCP) | Teams / email / collaboration signals        |
+| Web Research        | Azure AI Foundry (web search)   | `foundry_deep_research_tool`  | Latest public information                    |
+
+Investigation reasoning flow:
+
+```
+Question
+ ↓
+Official Docs (query_ms_docs_tool)
+ ↓
+Enterprise Knowledge (foundry_knowledge_tool via Foundry IQ)
+ ↓
+Org Context (query_workiq_tool via Work IQ MCP)
+ ↓
+Web Research (foundry_deep_research_tool)
+ ↓
+Root cause analysis + Recommended action
 ```
 
 ## Data Flow
@@ -117,6 +149,19 @@ FastAPI receives events via session.on(handler)
 - Spawns `npx -y @microsoft/learn-docs-mcp` subprocess
 - Sends MCP JSON-RPC `tools/call` request over stdio
 - Falls back to returning a Microsoft Learn search URL if MCP unavailable
+
+### foundry_knowledge_tool *(NEW)*
+- Queries enterprise knowledge bases using **Foundry IQ** (powered by Azure AI Search)
+- Calls the **Azure AI Search MCP server** (`@azure/mcp` with `azureaisearch` namespace)
+  via a short-lived JSON-RPC subprocess, identical in pattern to `query_ms_docs_tool`
+- Supports a **sample data mode** (`FOUNDRY_IQ_SAMPLE_MODE=true`) that searches local
+  markdown files in `backend/sample_data/foundry_iq/` — useful for local development
+  and demos without a live Azure subscription
+- Environment variables:
+  - `AZURE_FOUNDRY_PROJECT_ENDPOINT` — Azure AI Search endpoint URL
+  - `AZURE_SEARCH_INDEX_NAME` — Foundry IQ index name (default: `foundry-iq`)
+  - `FOUNDRY_IQ_SAMPLE_MODE` — set to `true` for local sample data mode
+- Reference: https://learn.microsoft.com/en-us/azure/search/search-get-started-mcp
 
 ### foundry_deep_research_tool
 - Uses `azure-ai-projects` Python SDK

@@ -1,8 +1,13 @@
 """
-Support Agent — Copilot SDK orchestrator.
+Enterprise Intelligence Agent — Copilot SDK orchestrator.
 
 Manages the lifecycle of GitHub Copilot SDK sessions and registers
-all custom tools (Foundry deep research, PowerPoint, MS Docs, Work IQ).
+all custom tools (MS Docs, Foundry IQ enterprise knowledge, Foundry deep
+research, Work IQ MCP, PowerPoint).
+
+An enterprise investigation agent that combines Foundry IQ, Work IQ, and
+Fabric IQ to analyze issues using organizational knowledge, collaboration
+context, and operational data.
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from copilot import CopilotClient, PermissionHandler
 
 from tools import (
     foundry_deep_research_tool,
+    foundry_knowledge_tool,
     generate_powerpoint_tool,
     query_ms_docs_tool,
 )
@@ -243,6 +249,7 @@ class SupportAgent:
                 "on_permission_request": PermissionHandler.approve_all,
                 "tools": [
                     query_ms_docs_tool,
+                    foundry_knowledge_tool,
                     foundry_deep_research_tool,
                     generate_powerpoint_tool,
                 ],
